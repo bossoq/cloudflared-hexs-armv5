@@ -59,6 +59,7 @@ jobs:
             --build-arg CF_ASSET=cloudflared-linux-arm \
             -t "$IMAGE:${{ steps.ver.outputs.version }}" \
             -t "$IMAGE:latest" \
+            --provenance=false --sbom=false \
             --push .
 
       - name: Summary
