@@ -1,0 +1,66 @@
+name: build-and-push
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "cloudflared release tag (blank = latest)"
+        required: false
+        default: ""
+  repository_dispatch:
+    types: [cloudflared-release]
+  schedule:
+    - cron: "17 5 * * 1"   # weekly safety-net rebuild (Mon 05:17 UTC)
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-and-push
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/bossoq/cloudflared-hexs-armv5
+
+jobs:
+  build:
+    runs-on: [self-hosted, hexs-build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve cloudflared version
+        id: ver
+        run: |
+          V="${{ github.event.inputs.version }}"
+          if [ -z "$V" ] && [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            V="${{ github.event.client_payload.version }}"
+          fi
+          if [ -z "$V" ]; then
+            V="$(curl -fsSL https://api.github.com/repos/cloudflare/cloudflared/releases/latest \
+                 | grep -oP '"tag_name":\s*"\K[^"]+')"
+          fi
+          [ -n "$V" ] || { echo "could not resolve version"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Resolved cloudflared version: $V"
+
+      - name: Set up Buildx (docker-container driver)
+        run: |
+          docker buildx inspect hexs >/dev/null 2>&1 || docker buildx create --name hexs --driver docker-container
+          docker buildx use hexs
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build & push (linux/arm/v5, soft-float)
+        run: |
+          docker buildx build \
+            --platform linux/arm/v5 \
+            --build-arg CF_VERSION="${{ steps.ver.outputs.version }}" \
+            --build-arg CF_ASSET=cloudflared-linux-arm \
+            -t "$IMAGE:${{ steps.ver.outputs.version }}" \
+            -t "$IMAGE:latest" \
+            --push .
+
+      - name: Summary
+        run: |
+          echo "Pushed \`$IMAGE:${{ steps.ver.outputs.version }}\` and \`:latest\`" >> "$GITHUB_STEP_SUMMARY"
